@@ -413,7 +413,17 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (device_state_ == kDeviceStateSpeaking) {
+                        // 立即停止音频播放相关的任务
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            audio_decode_queue_.clear();
+                        }
+                        // 设置中止标志，停止解码和播放
+                        aborted_ = true;
+                        
+                        // 等待其他非音频播放相关的任务完成
                         background_task_->WaitForCompletion();
+                        
                         if (keep_listening_) {
                             protocol_->SendStartListening(kListeningModeAutoStop);
                             SetDeviceState(kDeviceStateListening);
