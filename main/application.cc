@@ -413,7 +413,17 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (device_state_ == kDeviceStateSpeaking) {
+                        // 立即停止音频播放相关的任务
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            audio_decode_queue_.clear();
+                        }
+                        // 设置中止标志，停止解码和播放
+                        aborted_ = true;
+                        
+                        // 等待其他非音频播放相关的任务完成
                         background_task_->WaitForCompletion();
+                        
                         if (keep_listening_) {
                             protocol_->SendStartListening(kListeningModeAutoStop);
                             SetDeviceState(kDeviceStateListening);
@@ -488,13 +498,9 @@ void Application::Start() {
             });
         });
     });
-#endif
-
-#if CONFIG_USE_WAKE_WORD_DETECT
-    wake_word_detect_.Initialize(codec->input_channels(), codec->input_reference());
-    wake_word_detect_.OnVadStateChange([this](bool speaking) {
-        Schedule([this, speaking]() {
-            if (device_state_ == kDeviceStateListening) {
+    audio_processor_.OnVadStateChange([this](bool speaking) {
+        if (device_state_ == kDeviceStateListening) {
+            Schedule([this, speaking]() {
                 if (speaking) {
                     voice_detected_ = true;
                 } else {
@@ -502,10 +508,13 @@ void Application::Start() {
                 }
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
-            }
-        });
+            });
+        }
     });
+#endif
 
+#if CONFIG_USE_WAKE_WORD_DETECT
+    wake_word_detect_.Initialize(codec->input_channels(), codec->input_reference());
     wake_word_detect_.OnWakeWordDetected([this](const std::string& wake_word) {
         Schedule([this, &wake_word]() {
             if (device_state_ == kDeviceStateIdle) {
@@ -532,9 +541,6 @@ void Application::Start() {
             } else if (device_state_ == kDeviceStateActivating) {
                 SetDeviceState(kDeviceStateIdle);
             }
-
-            // Resume detection
-            wake_word_detect_.StartDetection();
         });
     });
     wake_word_detect_.StartDetection();
@@ -743,6 +749,9 @@ void Application::SetDeviceState(DeviceState state) {
 #if CONFIG_USE_AUDIO_PROCESSOR
             audio_processor_.Stop();
 #endif
+#if CONFIG_USE_WAKE_WORD_DETECT
+            wake_word_detect_.StartDetection();
+#endif
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -757,6 +766,9 @@ void Application::SetDeviceState(DeviceState state) {
 #if CONFIG_USE_AUDIO_PROCESSOR
             audio_processor_.Start();
 #endif
+#if CONFIG_USE_WAKE_WORD_DETECT
+            wake_word_detect_.StopDetection();
+#endif
             UpdateIotStates();
             if (previous_state == kDeviceStateSpeaking) {
                 // FIXME: Wait for the speaker to empty the buffer
@@ -769,6 +781,9 @@ void Application::SetDeviceState(DeviceState state) {
             codec->EnableOutput(true);
 #if CONFIG_USE_AUDIO_PROCESSOR
             audio_processor_.Stop();
+#endif
+#if CONFIG_USE_WAKE_WORD_DETECT
+            wake_word_detect_.StartDetection();
 #endif
             break;
         default:
